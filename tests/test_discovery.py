@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from releasekit.discovery import discover_files
 
 
@@ -50,8 +52,6 @@ def test_ignores_symbolic_links(tmp_path: Path):
     try:
         symlink.symlink_to(external_file)
     except (OSError, NotImplementedError):
-        import pytest
-
         pytest.skip("Symbolic links are not available in this environment")
 
     result = discover_files(project)
@@ -85,3 +85,28 @@ def test_ignores_path_reported_as_symbolic_link(
     result = discover_files(project)
 
     assert [file.relative_path for file in result] == [Path("normal.txt")]
+
+def test_excludes_directories_by_name(tmp_path: Path):
+    source_directory = tmp_path / "src"
+    source_directory.mkdir()
+
+    git_directory = tmp_path / ".git"
+    git_directory.mkdir()
+
+    nested_venv = tmp_path / "docs" / ".venv"
+    nested_venv.mkdir(parents=True)
+
+    (tmp_path / "root.txt").write_text("root", encoding="utf-8")
+    (source_directory / "app.py").write_text("app", encoding="utf-8")
+    (git_directory / "config").write_text("git config", encoding="utf-8")
+    (nested_venv / "package.py").write_text("venv", encoding="utf-8")
+
+    result = discover_files(
+        tmp_path,
+        excluded_directories={".git", ".venv"},
+    )
+
+    assert {file.relative_path for file in result} == {
+        Path("root.txt"),
+        Path("src/app.py"),
+    }

@@ -1,4 +1,4 @@
-
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,16 +9,22 @@ class DiscoveredFile:
     size: int
 
 
-def discover_files(directory: Path) -> list[DiscoveredFile]:
+def discover_files(
+    directory: Path, excluded_directories: set[str] | None = None
+) -> list[DiscoveredFile]:
     files = []
+    excluded_directories = excluded_directories or set()
 
-    for path in directory.rglob("*"):
-        if not path.is_symlink() and path.is_file():
-            files.append(
-                DiscoveredFile(
-                    relative_path=path.relative_to(directory),
-                    size=path.stat().st_size,
+    for root, directories, filenames in os.walk(directory):
+        directories[:] = [name for name in directories if name not in excluded_directories]
+        for filename in filenames:
+            path = Path(root) / filename
+            if not path.is_symlink() and path.is_file():
+                files.append(
+                    DiscoveredFile(
+                        relative_path=path.relative_to(directory),
+                        size=path.stat().st_size,
+                    )
                 )
-            )
 
     return files
