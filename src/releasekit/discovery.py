@@ -13,7 +13,7 @@ def discover_files(directory: Path) -> list[DiscoveredFile]:
     files = []
 
     for path in directory.rglob("*"):
-        if path.is_file():
+        if not path.is_symlink() and path.is_file():
             files.append(
                 DiscoveredFile(
                     relative_path=path.relative_to(directory),
