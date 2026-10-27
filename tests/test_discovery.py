@@ -110,3 +110,17 @@ def test_excludes_directories_by_name(tmp_path: Path):
         Path("root.txt"),
         Path("src/app.py"),
     }
+
+def test_raises_error_when_directory_does_not_exist(tmp_path: Path):
+    missing_directory = tmp_path / "missing"
+
+    with pytest.raises(FileNotFoundError):
+        discover_files(missing_directory)
+
+
+def test_raises_error_when_path_is_not_a_directory(tmp_path: Path):
+    file = tmp_path / "document.txt"
+    file.write_text("content", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError):
+        discover_files(file)
