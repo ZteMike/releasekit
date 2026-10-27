@@ -1,8 +1,10 @@
+import os
+import stat
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-import os
-import subprocess
 
 from releasekit.discovery import discover_files
 
@@ -74,19 +76,36 @@ def test_ignores_path_reported_as_symbolic_link(
     symlink_candidate = project / "link.txt"
     symlink_candidate.write_text("linked", encoding="utf-8")
 
-    original_is_symlink = Path.is_symlink
+    original_lstat = os.lstat
 
-    def fake_is_symlink(path: Path) -> bool:
-        if path == symlink_candidate:
-            return True
+    def fake_lstat(path, *args, **kwargs):
+        if Path(path) == symlink_candidate:
+            return SimpleNamespace(st_mode=stat.S_IFLNK, st_reparse_tag=0)
+        return original_lstat(path, *args, **kwargs)
 
-        return original_is_symlink(path)
-
-    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr("releasekit.discovery.os.lstat", fake_lstat)
 
     result = discover_files(project)
 
     assert [file.relative_path for file in result] == [Path("normal.txt")]
+
+
+def test_uses_file_lstat_metadata_for_size(tmp_path: Path, monkeypatch):
+    file = tmp_path / "document.txt"
+    file.write_text("content", encoding="utf-8")
+    original_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        if Path(path) == file:
+            return SimpleNamespace(st_mode=stat.S_IFREG, st_reparse_tag=0, st_size=123)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr("releasekit.discovery.os.lstat", fake_lstat)
+
+    result = discover_files(tmp_path)
+
+    assert [(item.relative_path, item.size) for item in result] == [(Path("document.txt"), 123)]
+
 
 def test_excludes_directories_by_name(tmp_path: Path):
     source_directory = tmp_path / "src"
@@ -113,6 +132,7 @@ def test_excludes_directories_by_name(tmp_path: Path):
         Path("src/app.py"),
     }
 
+
 def test_raises_error_when_directory_does_not_exist(tmp_path: Path):
     missing_directory = tmp_path / "missing"
 
@@ -126,6 +146,7 @@ def test_raises_error_when_path_is_not_a_directory(tmp_path: Path):
 
     with pytest.raises(NotADirectoryError):
         discover_files(file)
+
 
 def test_raises_permission_error_during_directory_walk(
     tmp_path: Path,
@@ -149,6 +170,7 @@ def test_raises_permission_error_during_directory_walk(
 
     with pytest.raises(PermissionError, match="Permission denied"):
         discover_files(tmp_path)
+
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junctions only")
 def test_does_not_traverse_windows_junctions(tmp_path: Path):
@@ -187,3 +209,107 @@ def test_does_not_traverse_windows_junctions(tmp_path: Path):
     assert {file.relative_path for file in result} == {
         Path("normal.txt"),
     }
+
+
+def test_does_not_traverse_symbolic_link_directory(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "normal.txt").write_text("normal", encoding="utf-8")
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "secret.txt").write_text("secret", encoding="utf-8")
+
+    try:
+        (project / "link").symlink_to(external, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic links are not available in this environment")
+
+    assert {file.relative_path for file in discover_files(project)} == {
+        Path("normal.txt")
+    }
+
+
+def test_rejects_symbolic_link_as_root(tmp_path: Path):
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic links are not available in this environment")
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        discover_files(link)
+
+
+def test_prunes_directory_reported_as_symbolic_link(tmp_path: Path, monkeypatch):
+    link = tmp_path / "link"
+    link.mkdir()
+    (link / "secret.txt").write_text("secret", encoding="utf-8")
+    original_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        if Path(path) == link:
+            return SimpleNamespace(st_mode=stat.S_IFLNK, st_reparse_tag=0)
+        return original_lstat(path, *args, **kwargs)
+
+    def fake_walk(directory, *, onerror=None):
+        directories = ["link"]
+        yield str(directory), directories, []
+        if "link" in directories:
+            yield str(link), [], ["secret.txt"]
+
+    monkeypatch.setattr("releasekit.discovery.os.lstat", fake_lstat)
+    monkeypatch.setattr("releasekit.discovery.os.walk", fake_walk)
+
+    assert discover_files(tmp_path) == []
+
+
+def test_rejects_root_reported_as_symbolic_link(tmp_path: Path, monkeypatch):
+    original_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        if Path(path) == tmp_path:
+            return SimpleNamespace(st_mode=stat.S_IFLNK, st_reparse_tag=0)
+        return original_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("releasekit.discovery.os.lstat", fake_lstat)
+        with pytest.raises(ValueError, match="symbolic link"):
+            discover_files(tmp_path)
+
+
+def test_propagates_permission_error_inspecting_root(tmp_path: Path, monkeypatch):
+    error = PermissionError(13, "Permission denied", str(tmp_path))
+    original_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        if Path(path) == tmp_path:
+            raise error
+        return original_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("releasekit.discovery.os.lstat", fake_lstat)
+        with pytest.raises(PermissionError) as raised:
+            discover_files(tmp_path)
+
+    assert raised.value is error
+    assert raised.value.filename == str(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junctions only")
+def test_rejects_root_reported_as_windows_junction(tmp_path: Path, monkeypatch):
+    original_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        if Path(path) == tmp_path:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR,
+                st_reparse_tag=stat.IO_REPARSE_TAG_MOUNT_POINT,
+            )
+        return original_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("releasekit.discovery.os.lstat", fake_lstat)
+        with pytest.raises(ValueError, match="junction"):
+            discover_files(tmp_path)

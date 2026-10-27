@@ -10,10 +10,10 @@ class DiscoveredFile:
     size: int
 
 
-def _is_windows_junction(path: Path) -> bool:
+def _is_link_or_junction(file_stat: os.stat_result) -> bool:
     return (
-        os.name == "nt"
-        and os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        stat.S_ISLNK(file_stat.st_mode)
+        or (os.name == "nt" and file_stat.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
     )
 
 
@@ -38,14 +38,16 @@ def discover_files(
     Raises:
         FileNotFoundError: If the root directory does not exist.
         NotADirectoryError: If the root path is not a directory.
-        PermissionError: If a directory cannot be read during traversal.
+        ValueError: If the root path is a symbolic link or junction.
+        PermissionError: If the root or a directory cannot be accessed.
     """
-    if not directory.exists():
-        raise FileNotFoundError(f"Directory does not exist: {directory}")
-    if not directory.is_dir():
+    root_stat = os.lstat(directory)
+    if _is_link_or_junction(root_stat):
+        raise ValueError(f"Root directory cannot be a symbolic link or junction: {directory}")
+    if not stat.S_ISDIR(root_stat.st_mode):
         raise NotADirectoryError(f"Path is not a directory: {directory}")
 
-    files = []
+    files: list[DiscoveredFile] = []
     excluded_directories = excluded_directories or set()
 
     def raise_walk_error(error: OSError) -> None:
@@ -56,15 +58,16 @@ def discover_files(
             name
             for name in directories
             if name not in excluded_directories
-            and not _is_windows_junction(Path(root) / name)
+            and not _is_link_or_junction(os.lstat(Path(root) / name))
         ]
         for filename in filenames:
             path = Path(root) / filename
-            if not path.is_symlink() and path.is_file():
+            file_stat = os.lstat(path)
+            if not _is_link_or_junction(file_stat) and stat.S_ISREG(file_stat.st_mode):
                 files.append(
                     DiscoveredFile(
                         relative_path=path.relative_to(directory),
-                        size=path.stat().st_size,
+                        size=file_stat.st_size,
                     )
                 )
 
