@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import pytest
+import os
+import subprocess
 
 from releasekit.discovery import discover_files
 
@@ -124,3 +126,64 @@ def test_raises_error_when_path_is_not_a_directory(tmp_path: Path):
 
     with pytest.raises(NotADirectoryError):
         discover_files(file)
+
+def test_raises_permission_error_during_directory_walk(
+    tmp_path: Path,
+    monkeypatch,
+):
+    restricted_directory = tmp_path / "restricted"
+
+    def fake_walk(directory: Path, *, onerror=None):
+        error = PermissionError(
+            13,
+            "Permission denied",
+            str(restricted_directory),
+        )
+
+        if onerror is not None:
+            onerror(error)
+
+        return []
+
+    monkeypatch.setattr("releasekit.discovery.os.walk", fake_walk)
+
+    with pytest.raises(PermissionError, match="Permission denied"):
+        discover_files(tmp_path)
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junctions only")
+def test_does_not_traverse_windows_junctions(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    normal_file = project / "normal.txt"
+    normal_file.write_text("normal", encoding="utf-8")
+
+    external_directory = tmp_path / "external"
+    external_directory.mkdir()
+
+    secret_file = external_directory / "secret.txt"
+    secret_file.write_text("secret", encoding="utf-8")
+
+    junction = project / "external-link"
+
+    completed = subprocess.run(
+        [
+            "cmd",
+            "/c",
+            "mklink",
+            "/J",
+            str(junction),
+            str(external_directory),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if completed.returncode != 0:
+        pytest.skip("Unable to create a Windows junction")
+
+    result = discover_files(project)
+
+    assert {file.relative_path for file in result} == {
+        Path("normal.txt"),
+    }
