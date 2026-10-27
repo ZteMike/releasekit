@@ -19,7 +19,7 @@ def _is_windows_junction(path: Path) -> bool:
 
 def discover_files(
     directory: Path, excluded_directories: set[str] | None = None
-) -> list[DiscoveredFile]: 
+) -> list[DiscoveredFile]:
     """Discover files safely inside a directory tree.
 
     Symbolic links and Windows junctions are not traversed.
