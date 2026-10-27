@@ -12,7 +12,7 @@ class DiscoveredFile:
 def discover_files(directory: Path) -> list[DiscoveredFile]:
     files = []
 
-    for path in directory.iterdir():
+    for path in directory.rglob("*"):
         if path.is_file():
             files.append(
                 DiscoveredFile(
